@@ -135,7 +135,7 @@ typedef struct Conv_params_type
    NAME::has_thresholds};
 
 namespace conv_common_params {
-static const unsigned num_pe = 16;
+static const unsigned num_pe = 4;
 static const unsigned nbits_per_word = 32;
 static const unsigned nbits_in_data = 2;
 static const unsigned nbits_k_data = 1;
