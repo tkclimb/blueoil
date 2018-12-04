@@ -54,32 +54,34 @@ hls_avalon_slave_component void intel_hls_qconv_kn2row_tiling_impl(
   /// just alias for better understanding
   static const unsigned out_c_low = p::num_pe;
 
+  // in_buf shoule be banked by 8 elems, because this has 2 bits per an element, and
+  // 4 inputs are computed along with input channel dimension at a cycle.
+  // This also should be doublepump because this loads next data from bus while computing the others.
+  hls_memory hls_singlepump hls_bankbits(0, 1)
+    T_in_hls in_buf[p::in_tile_h][p::in_tile_w][p::max_in_c_by_word][p::max_in_b];
+
+  // out_buf shoule be banked by 16 elems, because out_c_low is 16, which log2 is 4.
+  // This also should should be doublepump, because accumulation happens at every cycle,
+  // requiring reading a data and computing it, then rewriting it to the same address.
+  hls_memory hls_doublepump hls_bankbits(0, 1, 2) T_out_hls out_buf[p::tile_w][p::tile_w][out_c_low];
+
+  // k_buf shoule be banked by 64 elems, because
+  // 16 kernels are needed to produce 16 outputs which is fully banked by 16 on out_c_low
+  // Also per 1 output, 4 kernels are additionally needed to product with the 8 inputs coming from bus.
+  // Only singlepump is OK for kernel.
+  hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3) hls_memory T_k_hls k_buf[p::max_in_c_by_word][out_c_low];
+
 OUTSIDE_TILE_LOOP:
 #pragma loop_coalesce 2
   for (int ih_high = 0; ih_high < in_h + 2 * pad; ih_high += p::tile_h) {
     for (int iw_high = 0; iw_high < in_w + 2 * pad; iw_high += p::tile_w) {
 #pragma unroll 1
       for (int oc_high = 0; oc_high < out_c; oc_high += out_c_low) {
-        // in_buf shoule be banked by 8 elems, because this has 2 bits per an element, and
-        // 4 inputs are computed along with input channel dimension at a cycle.
-        // This also should be doublepump because this loads next data from bus while computing the others.
-        hls_memory hls_singlepump hls_bankbits(0, 1, 2)
-          T_in_hls in_buf[p::in_tile_h][p::in_tile_w][p::max_in_c_by_word][p::max_in_b];
-
-        // out_buf shoule be banked by 16 elems, because out_c_low is 16, which log2 is 4.
-        // This also should should be doublepump, because accumulation happens at every cycle,
-        // requiring reading a data and computing it, then rewriting it to the same address.
-        hls_memory hls_doublepump hls_bankbits(0, 1, 2) T_out_hls out_buf[p::tile_w][p::tile_w][out_c_low];
-
-        // k_buf shoule be banked by 64 elems, because
-        // 16 kernels are needed to produce 16 outputs which is fully banked by 16 on out_c_low
-        // Also per 1 output, 4 kernels are additionally needed to product with the 8 inputs coming from bus.
-        // Only singlepump is OK for kernel.
-        hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3, 4) hls_memory T_k_hls k_buf[p::max_in_c_by_word][out_c_low];
-        hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3, 4) T_out_hls threshold_buf[out_c_low][p::num_thresholds];
 
         // threshold loading module.
         // just relay on automatic unroll.
+        hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3, 4) T_out_hls threshold_buf[out_c_low][p::num_thresholds];
+
       THRESHOLD_LOAD_UNIT:
         if (use_threshold > 0) {
 #pragma unroll
@@ -155,7 +157,7 @@ OUTSIDE_TILE_LOOP:
                 hls_register T_out_hls out_regs[out_c_low] = {0, 0, 0, 0, 0, 0, 0, 0};
 
                 // MAC compute module.
-#pragma unroll 4
+#pragma unroll 2
                 for (int ic = 0; ic < in_c_by_word; ic++) {
                   hls_register T_in_hls in_elems[p::max_in_b];
 
