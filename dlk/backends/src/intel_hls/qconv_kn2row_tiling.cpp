@@ -54,83 +54,79 @@ hls_avalon_slave_component void intel_hls_qconv_kn2row_tiling_impl(
   /// just alias for better understanding
   static const unsigned out_c_low = p::num_pe;
 
-  // in_buf shoule be banked by 8 elems, because this has 2 bits per an element, and
-  // 4 inputs are computed along with input channel dimension at a cycle.
-  // This also should be doublepump because this loads next data from bus while computing the others.
-  hls_memory hls_singlepump hls_bankbits(0, 1)
-    T_in_hls in_buf[p::in_tile_h][p::in_tile_w][p::max_in_c_by_word][p::max_in_b];
-
-  // out_buf shoule be banked by 16 elems, because out_c_low is 16, which log2 is 4.
-  // This also should should be doublepump, because accumulation happens at every cycle,
-  // requiring reading a data and computing it, then rewriting it to the same address.
-  hls_memory hls_doublepump hls_bankbits(0, 1, 2) T_out_hls out_buf[p::tile_w][p::tile_w][out_c_low];
-
-  // k_buf shoule be banked by 64 elems, because
-  // 16 kernels are needed to produce 16 outputs which is fully banked by 16 on out_c_low
-  // Also per 1 output, 4 kernels are additionally needed to product with the 8 inputs coming from bus.
-  // Only singlepump is OK for kernel.
-  hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3) hls_memory T_k_hls k_buf[p::max_in_c_by_word][out_c_low];
-
 OUTSIDE_TILE_LOOP:
+#pragma unroll 1
+#pragma max_concurrency 1
 #pragma loop_coalesce 2
   for (int ih_high = 0; ih_high < in_h + 2 * pad; ih_high += p::tile_h) {
     for (int iw_high = 0; iw_high < in_w + 2 * pad; iw_high += p::tile_w) {
+      // in_buf shoule be banked by 8 elems, because this has 2 bits per an element, and
+      // 4 inputs are computed along with input channel dimension at a cycle.
+      // This also should be doublepump because this loads next data from bus while computing the others.
+      hls_memory hls_singlepump hls_bankbits(0, 1)
+        T_in_hls in_buf[p::in_tile_h][p::in_tile_w][p::max_in_c_by_word][p::max_in_b];
+
+    INPUT_LOAD_MODULE:
 #pragma unroll 1
+#pragma max_concurrency 1
+#pragma loop_coalesce 2
+      for (int ih_low = 0; ih_low < p::in_tile_h; ++ih_low) {
+        for (int iw_low = 0; iw_low < p::in_tile_w; ++iw_low) {
+          /// index must care the padding, so we skip the padding part that
+          /// doesn't exist in actual memory.
+          const int ih = (ih_low + ih_high - pad);
+          const int iw = (iw_low + iw_high - pad);
+          const bool input_on = (ih >= 0) && (iw >= 0) && (ih < in_h) && (iw < in_w);
+
+#pragma unroll 2
+#pragma max_concurrency 2
+          for (int ic = 0; ic < in_c_by_word; ic++) {
+#pragma unroll
+#pragma max_concurrency 2
+            for (int ib = 0; ib < p::max_in_b; ib++) {
+              const int _in_w = int(in_w);
+              const int _in_c = int(in_c_by_word);
+              // loading inputs from bus.
+              // if the coordinates on the padding, this stores 0 instead of loading the data.
+              in_buf[ih_low][iw_low][ic][ib] =
+                (input_on)
+                  ? in_data[ih * _in_w * _in_c * p::max_in_b + iw * _in_c * p::max_in_b + ic * p::max_in_b + ib]
+                  : T_in_hls(0);
+            }
+          }
+        }
+      }
+
+#pragma unroll 1
+#pragma max_concurrency 1
       for (int oc_high = 0; oc_high < out_c; oc_high += out_c_low) {
+        // out_buf shoule be banked by 16 elems, because out_c_low is 16, which log2 is 4.
+        // This also should should be doublepump, because accumulation happens at every cycle,
+        // requiring reading a data and computing it, then rewriting it to the same address.
+        hls_memory hls_doublepump hls_bankbits(0, 1, 2) T_out_hls out_buf[p::tile_w][p::tile_w][out_c_low];
+
+        // k_buf shoule be banked by 64 elems, because
+        // 16 kernels are needed to produce 16 outputs which is fully banked by 16 on out_c_low
+        // Also per 1 output, 4 kernels are additionally needed to product with the 8 inputs coming from bus.
+        // Only singlepump is OK for kernel.
+        hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3)
+          hls_memory T_k_hls k_buf[p::max_k_h][p::max_k_w][p::max_in_c_by_word][out_c_low];
 
         // threshold loading module.
         // just relay on automatic unroll.
         hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3, 4) T_out_hls threshold_buf[out_c_low][p::num_thresholds];
 
-      THRESHOLD_LOAD_UNIT:
-        if (use_threshold > 0) {
-#pragma unroll
-          for (unsigned oc = 0; oc < out_c_low; oc++) {
-#pragma unroll
-            for (unsigned i = 0; i < p::num_thresholds; i++) {
-              unsigned idx_th = (oc_high + oc) * p::num_thresholds + i;
-              threshold_buf[oc][i] = threshold_data[idx_th];
-            }
-          }
-        }
-
-      INPUT_LOAD_MODULE:
-#pragma loop_coalesce 2
-        for (int ih_low = 0; ih_low < p::in_tile_h; ++ih_low) {
-          for (int iw_low = 0; iw_low < p::in_tile_w; ++iw_low) {
-            /// index must care the padding, so we skip the padding part that
-            /// doesn't exist in actual memory.
-            const int ih = (ih_low + ih_high - pad);
-            const int iw = (iw_low + iw_high - pad);
-            const bool input_on = (ih >= 0) && (iw >= 0) && (ih < in_h) && (iw < in_w);
-
-#pragma unroll 2
-            for (int ic = 0; ic < in_c_by_word; ic++) {
-#pragma unroll
-              for (int ib = 0; ib < p::max_in_b; ib++) {
-                const int _in_w = int(in_w);
-                const int _in_c = int(in_c_by_word);
-                // loading inputs from bus.
-                // if the coordinates on the padding, this stores 0 instead of loading the data.
-                in_buf[ih_low][iw_low][ic][ib] =
-                  (input_on)
-                    ? in_data[ih * _in_w * _in_c * p::max_in_b + iw * _in_c * p::max_in_b + ic * p::max_in_b + ib]
-                    : T_in_hls(0);
-              }
-            }
-          }
-        }
-
-      KN2ROW_KERNEL_LOOP:
+      KERNEL_LOAD_MODULE:
+#pragma unroll 1
+#pragma max_concurrency 1
 #pragma loop_coalesce 2
         for (int kh = 0; kh < k_h; ++kh) {
           for (int kw = 0; kw < k_w; ++kw) {
-
-            // just relay on automatic unroll.
-          KERNEL_LOAD_MODULE:
 #pragma unroll 2
+#pragma max_concurrency 2
             for (int ic = 0; ic < in_c_by_word; ic++) {
 #pragma unroll
+#pragma max_concurrency 8
               for (int oc = 0; oc < out_c_low; oc++) {
                 /// currently kernel order is NoHWCNi, which means the
                 /// outermost dimension "N" is split into 2 high and low
@@ -141,13 +137,38 @@ OUTSIDE_TILE_LOOP:
                 const int _k_h = int(k_h);
                 const int idx_k = (kh * _k_w * _in_c * out_c_low) + (kw * _in_c * out_c_low) + (ic * out_c_low) + oc +
                                   (oc_high * _k_h * _k_w * _in_c);
-                k_buf[ic][oc] = k_data[idx_k];
+                k_buf[kh][kw][ic][oc] = k_data[idx_k];
               }
             }
+          }
+        }
+
+      THRESHOLD_LOAD_UNIT:
+        if (use_threshold > 0) {
+#pragma unroll
+#pragma max_concurrency 8
+          for (unsigned oc = 0; oc < out_c_low; oc++) {
+#pragma unroll
+#pragma max_concurrency 4
+            for (unsigned i = 0; i < p::num_thresholds; i++) {
+              unsigned idx_th = (oc_high + oc) * p::num_thresholds + i;
+              threshold_buf[oc][i] = threshold_data[idx_th];
+            }
+          }
+        }
+
+      KN2ROW_KERNEL_LOOP:
+#pragma unroll 1
+#pragma max_concurrency 1
+#pragma loop_coalesce 2
+        for (int kh = 0; kh < k_h; ++kh) {
+          for (int kw = 0; kw < k_w; ++kw) {
 
             // computation module over the tile
           MAC_COMPUTATION_MODULE:
 #pragma loop_coalesce 2
+#pragma unroll 1
+#pragma max_concurrency 1
             for (int ih = 0; ih < p::in_tile_h; ++ih) {
               for (int iw = 0; iw < p::in_tile_w; ++iw) {
                 const int oh = ih - kh;
@@ -158,22 +179,26 @@ OUTSIDE_TILE_LOOP:
 
                 // MAC compute module.
 #pragma unroll 2
+#pragma max_concurrency 2
                 for (int ic = 0; ic < in_c_by_word; ic++) {
-                  hls_register T_in_hls in_elems[p::max_in_b];
+                  hls_register T_in_hls in_regs[p::max_in_b];
 
 #pragma unroll
-                  for (int ib = 0; ib < p::max_in_b; ib++) { in_elems[ib] = in_buf[ih][iw][ic][ib]; }
+#pragma max_concurrency 2
+                  for (int ib = 0; ib < p::max_in_b; ib++) { in_regs[ib] = in_buf[ih][iw][ic][ib]; }
 
 #pragma unroll
+#pragma max_concurrency 8
                   for (int oc = 0; oc < out_c_low; oc++) {
-                    const T_k_hls k_elem = k_buf[ic][oc];
-                    const T_out_hls mul_res = PE_kn2row_tiling(k_elem, in_elems);
+                    const T_k_hls k_reg = k_buf[kh][kw][ic][oc];
+                    const T_out_hls mul_res = PE_kn2row_tiling(k_reg, in_regs);
                     out_regs[oc] += mul_res;
                   }
                 }
 
                 if (output_on) {
 #pragma unroll
+#pragma max_concurrency 8
                   for (int oc = 0; oc < out_c_low; oc++) {
                     const T_out_hls out_pre = out_buf[oh][ow][oc];
                     const bool init_out = ((kh == 0) && (kw == 0));
@@ -187,9 +212,12 @@ OUTSIDE_TILE_LOOP:
 
       OUTPUT_STORE_MODULE:
 #pragma loop_coalesce 2
+#pragma unroll 1
+#pragma max_concurrency 1
         for (int oh = 0; oh < p::tile_h; ++oh) {
           for (int ow = 0; ow < p::tile_w; ++ow) {
 #pragma unroll
+#pragma max_concurrency 8
             for (int oc = 0; oc < out_c_low; oc++) {
               const T_out_hls out = out_buf[oh][ow][oc];
               T_out_hls tmp;
