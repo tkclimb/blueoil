@@ -43,6 +43,7 @@ bool test_conv(input_type &in_type, Conv_params_t &p)
   T_out *out_data_packed = new T_out[p.out_size];
   T_out *out_data_with_kn2row = new T_out[p.out_size];
   T_out *out_data_qconv_kn2row_tiling = new T_out[p.out_size];
+  T_out *out_data_qconv1x1_optim = new T_out[p.out_size];
   T_out *out_data_hls = new T_out[p.out_size];
   T_out *out_data_hls_qgemm = new T_out[p.out_size];
   T_out *out_data_hls_qconv_kn2row_tiling = new T_out[p.out_size];
@@ -141,11 +142,18 @@ bool test_conv(input_type &in_type, Conv_params_t &p)
   //                             p.stride_w);
   // comp_packed = compare_output(out_data_hls_qgemm, out_data, "hls_qgemm", p.out_h, p.out_w, p.out_c);
 
-  intel_hls_qconv_kn2row_tiling(in_data_packed, out_data_hls_qconv_kn2row_tiling, k_data_packed_t, threshold_data,
-                                p.in_w, p.in_h, p.in_c_by_word, p.nbits_in_data, p.out_w, p.out_h, p.out_c, p.k_w,
-                                p.k_h, p.pad_w, p.stride_w);
-  comp_packed =
-    compare_output(out_data_hls_qconv_kn2row_tiling, out_data, "hls_qconv_kn2row_tiling", p.out_h, p.out_w, p.out_c);
+  // intel_hls_qconv_kn2row_tiling(in_data_packed, out_data_hls_qconv_kn2row_tiling, k_data_packed_t, threshold_data,
+  //                               p.in_w, p.in_h, p.in_c_by_word, p.nbits_in_data, p.out_w, p.out_h, p.out_c, p.k_w,
+  //                               p.k_h, p.pad_w, p.stride_w);
+  // comp_packed =
+  //   compare_output(out_data_hls_qconv_kn2row_tiling, out_data, "hls_qconv_kn2row_tiling", p.out_h, p.out_w, p.out_c);
+
+  if ((KH == 1) && (KW == 1) && (p.pad_w == 0) && (p.stride_w == 1) && (p.nbits_in_data == 2)) {
+    intel_hls_qconv1x1_optim(in_data_packed, out_data_qconv1x1_optim, k_data_packed_hwnocni, threshold_data, p.in_w,
+                             p.in_h, p.in_c_by_word, p.nbits_in_data, p.out_w, p.out_h, p.out_c);
+    comp_packed =
+      compare_output(out_data_qconv1x1_optim, out_data, "intel_hls_qconv1x1_optim", p.out_h, p.out_w, p.out_c);
+  }
 
 #elif defined _DE10_NANO_
 

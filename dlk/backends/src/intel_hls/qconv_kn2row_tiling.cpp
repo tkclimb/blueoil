@@ -277,3 +277,183 @@ OUTSIDE_TILE_LOOP:
     }
   }
 }
+
+hls_avalon_slave_component void intel_hls_qconv1x1_optim_impl(
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_in_hls, ihc::aspace<1>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &in_data,
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_out_hls, ihc::aspace<2>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &out_data,
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_k_hls, ihc::aspace<3>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &k_data,
+  hls_avalon_slave_register_argument uint32 in_w, hls_avalon_slave_register_argument uint32 in_h,
+  hls_avalon_slave_register_argument uint32 in_c_by_word, hls_avalon_slave_register_argument uint32 out_w,
+  hls_avalon_slave_register_argument uint32 out_h, hls_avalon_slave_register_argument uint32 out_c)
+{
+  static const unsigned out_c_low = p::num_pe;
+
+KERNEL_LOAD_MODULE:
+#pragma unroll 1
+#pragma max_concurrency 1
+  for (int oc_high = 0; oc_high < out_c; oc_high += out_c_low) {
+    hls_memory hls_singlepump hls_bankbits(0, 1, 2, 3) hls_memory T_k_hls k_buf[p::max_in_c_by_word][out_c_low];
+
+    unsigned idx_in = 0;
+
+#pragma unroll 2
+    for (int kc = 0; kc < in_c_by_word; kc++) {
+#pragma unroll
+      for (int oc = 0; oc < out_c_low; oc++) {
+        const unsigned _in_c = unsigned(in_c_by_word);
+        const unsigned idx_k = (oc_high / out_c_low) * _in_c * out_c_low + kc * out_c_low + oc;
+        k_buf[kc][oc] = k_data[idx_k];
+      }
+    }
+
+#pragma loop_coalesce 2
+#pragma unroll 1
+    for (int ih = 0; ih < in_h; ++ih) {
+      for (int iw = 0; iw < in_w; ++iw) {
+        hls_register T_in_hls out_regs[out_c_low] = {0, 0, 0, 0, 0, 0, 0, 0};
+
+#pragma unroll 2
+        for (int ic = 0; ic < in_c_by_word; ic++) {
+          hls_register T_in_hls in_regs[p::max_in_b];
+
+#pragma unroll
+          for (int ib = 0; ib < p::max_in_b; ib++) {
+            const unsigned _in_w = unsigned(in_w);
+            const unsigned _in_c = unsigned(in_c_by_word);
+            // const unsigned idx_in = ih * _in_w * _in_c * p::max_in_b + iw * _in_c * p::max_in_b + ic * p::max_in_b +
+            // ib;
+            const int idx_k = (kh * _k_w * _in_c * out_c_low) + (kw * _in_c * out_c_low) + (ic * out_c_low) + oc +
+                              (oc_high * _k_h * _k_w * _in_c);
+            in_regs[ib] = in_data[idx_in++];
+          }
+
+#pragma unroll
+          for (int oc = 0; oc < out_c_low; oc++) {
+            const T_k_hls k_reg = k_buf[ic][oc];
+            out_regs[oc] += PE_kn2row_tiling(k_reg, in_regs);
+          }
+        }
+
+#pragma unroll
+        for (int oc = 0; oc < out_c_low; oc++) {
+          const unsigned _oc = oc_high + oc;
+          const unsigned _out_w = unsigned(in_w);
+          const unsigned _out_c = unsigned(out_c);
+          const unsigned idx_out = ih * _out_w * _out_c + iw * _out_c + _oc;
+          out_data[idx_out] = out_regs[oc];
+        }
+      }
+    }
+  }
+}
+
+hls_avalon_slave_component void intel_hls_qconv3x3_optim_impl(
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_in_hls, ihc::aspace<1>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &in_data,
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_out_hls, ihc::aspace<2>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &out_data,
+  hls_avalon_slave_register_argument
+    ihc::mm_master<T_k_hls, ihc::aspace<3>, ihc::awidth<32>, ihc::dwidth<BW_>, ihc::latency<0>, ihc::maxburst<32>,
+                   ihc::align<16>, ihc::waitrequest<true> > &k_data,
+  hls_avalon_slave_register_argument uint32 in_w, hls_avalon_slave_register_argument uint32 in_h,
+  hls_avalon_slave_register_argument uint32 in_c_by_word, hls_avalon_slave_register_argument uint32 out_w,
+  hls_avalon_slave_register_argument uint32 out_h, hls_avalon_slave_register_argument uint32 out_c)
+{
+  static const unsigned k_h = 3;
+  static const unsigned k_w = 3;
+  static const unsigned out_c_low = p::num_pe;
+  static const unsigned in_h_bank = 4;
+  static const unsigned p::in_tile_h_banked = (p::in_tile_h + (in_h_bank - 1)) / in_h_bank;
+
+  for (int oh_high = 0; oh_high < out_c; oh_high += out_c_low) {
+    hls_memory hls_singlepump hls_bankbits(0, 1, 2) T_out_hls out_buf[p::tile_h][p::tile_w][out_c_low];
+
+    hls_memory hls_singlepump ac_int<InTypeBitWidth, false> k[out_c_low][k_h][k_w];
+    hls_memory hls_singlepump T_out_hls kp[out_c_low];
+
+#pragma unroll 1
+    for (int oc = 0; oc < out_c_low; ++oc) {
+      int out_ch = oh_high + oc;
+      T_out_hls sum = 0;
+      // if (out_ch >= out_channels)
+      //   break;
+#pragma unroll 1
+#pragma loop_coalesce 2
+      for (int kh = 0; kh < k_h; ++kh) {
+#pragma unroll 1
+        for (int kw = 0; kw < k_w; ++kw) {
+#pragma unroll 1
+          for (int kc = 0; kc < in_c_by_word; ++kc) {
+            const int oc = oc_high * k_h * k_w * in_c_by_word + kh * k_w + kc;
+            ac_int<InTypeBitWidth, false> kernel = kernel_data[];
+            k[oc][kr][kc] = kernel;
+            sum += (T_out_hls)popcountll(kernel.bit_complement());
+          }
+        }
+      }
+      kp[oc] = sum;
+    }
+    for (int in_bit_ch = 0; in_bit_ch < in_bitwidth; ++in_bit_ch) {
+      hls_memory hls_singlepump hls_bankbits(6, 7, 8, 9, 10, 11)
+        IN_TYPE lines[TileOutputHeight * 2][TileOutputWidth * 2];
+#pragma ivdep array(lines)
+#pragma unroll 1
+      for (int row = 0; row < TileOutputHeight + 2; ++row) {
+        hls_register IN_TYPE v[3][3];
+#pragma unroll 1
+        for (int col = 0; col < TileOutputWidth + 2; ++col) {
+          lines[row][col] = in_data[ic_high * in_bitwidth * in_height * in_width + in_bit_ch * in_height * in_width +
+                                    row * in_width + col];
+          if (row < 2)
+            continue;
+#pragma unroll
+          for (int kr = 0; kr < 3; ++kr) {
+            v[kr][0] = v[kr][1];
+            v[kr][1] = v[kr][2];
+            v[kr][2] = lines[row - 2 + kr][col];
+          }
+          if (col < 2)
+            continue;
+#pragma unroll
+          for (int oc = 0; oc < out_c_low; ++oc) {
+            int out_ch = oh_high + oc;
+            if (out_ch >= out_channels)
+              continue;
+            ac_int<10, false> xnorsum = 0;
+#pragma unroll
+            for (int kr = 0; kr < 3; ++kr) {
+#pragma unroll
+              for (int kc = 0; kc < 3; ++kc) {
+                xnorsum += (ac_int<10, false>)popcountll((v[kr][kc] ^ k[oc][kr][kc]).bit_complement());
+              }
+            }
+            T_out_hls tmp = out[row - 2][col - 2][oc];
+            T_out_hls add_data = ((int16_t)xnorsum - (int16_t)kp[oc]) << in_bit_ch;
+            out[row - 2][col - 2][oc] = (in_bit_ch == 0 && ic_high == 0) ? add_data : tmp + add_data;
+          }
+        }
+      }
+    }
+#pragma unroll 1
+    for (int row = 0; row < TileOutputHeight; ++row) {
+#pragma unroll 1
+      for (int col = 0; col < TileOutputWidth; ++col) {
+#pragma unroll
+        for (int oc = 0; oc < out_c_low; ++oc) {
+          int out_ch = oh_high + oc;
+          if (out_ch >= out_channels)
+            continue;
+          out_data[row * out_width * out_stride + col * out_stride + out_ch] = out[row][col][oc];
+        }
+      }
+    }
+  }
+}
