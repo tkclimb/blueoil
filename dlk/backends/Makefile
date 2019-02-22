@@ -57,12 +57,12 @@ fpga:	CXX = arm-linux-gnueabihf-g++
 fpga:	FLAGS += $(INCLUDE) -static -std=c++0x -s -O3 -D_DE10_NANO_
 
 sim:   CXX = i++
-sim:   FLAGS += -march=x86-64 $(INTEL_HLS_INCLUDE) -lm $(COMPONENTS) -D_INTEL_HLS_
+sim:   FLAGS += -march=x86-64 $(INTEL_HLS_INCLUDE) -lm $(COMPONENTS) -D_INTEL_HLS_ -L/usr/lib/gcc/x86_64-redhat-linux/4.4.7
 sim:   $(INTEL_HLS_OBJ)
 	$(CXX) $(FLAGS) $(INTEL_HLS_OBJ) -o $@.elf $(CXXFLAGS)
 
 syn:    CXX = i++
-syn:    FLAGS += -march=$(DEVICE) -I$(INTEL_HLS_INSTALL_DIR)/include -L$(INTEL_HLS_INSTALL_DIR)/host/linux64/lib $(INTEL_HLS_INCLUDE) $(COMPONENTS) -ghdl --clock $(CLOCK) -D_INTEL_HLS_
+syn:    FLAGS += -march=$(DEVICE) -I$(INTEL_HLS_INSTALL_DIR)/include -L$(INTEL_HLS_INSTALL_DIR)/host/linux64/lib  -L/usr/lib/gcc/x86_64-redhat-linux/4.4.7 $(INTEL_HLS_INCLUDE) $(COMPONENTS) -ghdl --clock $(CLOCK) -D_INTEL_HLS_
 syn:   $(INTEL_HLS_OBJ)
 	$(CXX) $(FLAGS) $(INTEL_HLS_OBJ) -o $@.elf $(CXXFLAGS)
 

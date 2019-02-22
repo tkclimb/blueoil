@@ -121,7 +121,7 @@ void mac_compute_module(T_in_hls in_buf[p::in_tile_h][p::in_tile_w][p::max_in_c_
           }
 
 #pragma loop_coalesce 2
-#pragma unroll 4
+// #pragma unroll 4
           for (unsigned ic = 0; ic < in_c; ic++) {
             const unsigned ih = oh + kh;
             const unsigned iw = ow + kw;
